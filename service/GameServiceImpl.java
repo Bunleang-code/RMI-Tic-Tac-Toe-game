@@ -1,6 +1,6 @@
 package service;
 
-import model.*;
+import model.*; // Assuming GameMatch, GameState, Player, Move, GameStatus are here
 import java.rmi.RemoteException;
 import java.rmi.server.UnicastRemoteObject;
 import java.util.*;
@@ -12,15 +12,73 @@ public class GameServiceImpl extends UnicastRemoteObject implements GameService 
     public GameServiceImpl() throws RemoteException {
         super();
     }
+    
+    // -------------------------------------------------------
+    // Helper: Generate Unique 4-Digit Game ID
+    // -------------------------------------------------------
+    private String generateUnique4DigitGameId() {
+        // Generates a random number from 1000 to 9999
+        Random random = new Random();
+        String gameId;
+        
+        do {
+            int num = random.nextInt(9000) + 1000;
+            gameId = String.valueOf(num);
+            
+            // Check if this ID is already in use by an active game
+        } while (games.containsKey(gameId)); 
+        
+        return gameId;
+    }
+
 
     // -------------------------------------------------------
-    // Create Game
+    // Automated Matchmaking: Find or Create Game
+    // -------------------------------------------------------
+    /**
+     * Attempts to join an existing game waiting for a player. If none exists, 
+     * it creates a new game.
+     */
+    @Override
+    public synchronized GameMatch findOrCreateGame(String playerName) throws RemoteException {
+        
+        // 1. Check for any waiting games (WAITING_FOR_PLAYER)
+        String openGameId = null;
+        for (Map.Entry<String, GameState> entry : games.entrySet()) {
+            if (entry.getValue().getStatus() == GameStatus.WAITING_FOR_PLAYER) {
+                openGameId = entry.getKey();
+                break; // Found one, exit loop
+            }
+        }
+        
+        if (openGameId != null) {
+            // 2. Found an open game, JOIN it
+            // This is Player O
+            Player p = joinGame(openGameId, playerName); 
+            return new GameMatch(openGameId, p);
+            
+        } else {
+            // 3. No open game, CREATE a new one
+            // This is Player X
+            String newGameId = createGame(playerName);
+            
+            // Find the Player object created for the game creator
+            GameState gs = games.get(newGameId);
+            Player p = gs.getPlayers().get(0);
+            
+            return new GameMatch(newGameId, p);
+        }
+    }
+    
+    // -------------------------------------------------------
+    // Create Game (Used internally by findOrCreateGame)
     // -------------------------------------------------------
     @Override
     public synchronized String createGame(String playerName) throws RemoteException {
-        String gameId = UUID.randomUUID().toString();
+        String gameId = generateUnique4DigitGameId();
         GameState gs = new GameState(gameId);
 
+        // First player is always 'X'
         Player p = new Player(playerName, 'X');
         gs.getPlayers().add(p);
 
@@ -32,7 +90,7 @@ public class GameServiceImpl extends UnicastRemoteObject implements GameService 
     }
 
     // -------------------------------------------------------
-    // Join Game
+    // Join Game (Used internally by findOrCreateGame)
     // -------------------------------------------------------
     @Override
     public synchronized Player joinGame(String gameId, String playerName) throws RemoteException {
@@ -44,7 +102,7 @@ public class GameServiceImpl extends UnicastRemoteObject implements GameService 
         if (gs.getPlayers().size() >= 2)
             throw new RemoteException("Game full");
 
-        // Assign opposite symbol
+        // Assign opposite symbol (Second player is always 'O')
         char symbol = (gs.getPlayers().get(0).getSymbol() == 'X') ? 'O' : 'X';
         Player p = new Player(playerName, symbol);
 
@@ -55,15 +113,25 @@ public class GameServiceImpl extends UnicastRemoteObject implements GameService 
     }
 
     // -------------------------------------------------------
-    // List Open Games
+    // List Open Games (Cleanup Logic)
     // -------------------------------------------------------
     @Override
     public synchronized List<String> listOpenGames() throws RemoteException {
         List<String> open = new ArrayList<>();
+        
+        // Use an Iterator to safely remove finished games while iterating
+        Iterator<Map.Entry<String, GameState>> iterator = games.entrySet().iterator();
 
-        for (Map.Entry<String, GameState> entry : games.entrySet()) {
-            if (entry.getValue().getStatus() == GameStatus.WAITING_FOR_PLAYER) {
+        while (iterator.hasNext()) {
+            Map.Entry<String, GameState> entry = iterator.next();
+            GameState gs = entry.getValue();
+
+            if (gs.getStatus() == GameStatus.WAITING_FOR_PLAYER) {
+                // Game is still open and waiting for a second player
                 open.add(entry.getKey());
+            } else if (gs.getStatus() == GameStatus.FINISHED) {
+                // Game is finished, remove it to free up the 4-digit ID
+                iterator.remove();
             }
         }
 
